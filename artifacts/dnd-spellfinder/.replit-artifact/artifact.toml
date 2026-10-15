@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Incantesimi D&D 3.5"
+description = "Catalogo e scheda personale per cercare incantesimi di Dungeons & Dragons 3.5, gestire personaggi multiclasse e tenere traccia di preparazione, conoscenza e slot giornalieri."
+version = "1.0.0"
+id = "artifacts/dnd-spellfinder"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 23275
+
+[services.development]
+run = "pnpm --filter @workspace/dnd-spellfinder run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/dnd-spellfinder", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/dnd-spellfinder/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "23275"
+BASE_PATH = "/"

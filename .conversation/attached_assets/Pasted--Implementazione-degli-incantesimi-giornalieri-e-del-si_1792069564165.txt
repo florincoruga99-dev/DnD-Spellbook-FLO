@@ -1,0 +1,171 @@
+# Implementazione degli incantesimi giornalieri e del sistema multiclasse — App D&D 3.5
+
+Voglio che tu implementi nella mia applicazione web dedicata agli incantesimi di **Dungeons & Dragons 3.5** due nuove funzionalità fondamentali:
+
+1. **Gestione degli incantesimi giornalieri e degli slot disponibili.**
+2. **Supporto completo ai personaggi multiclasse.**
+
+Prima di modificare il codice, analizza attentamente la struttura attuale del progetto, i componenti esistenti, il modello dei dati degli incantesimi e le funzionalità già implementate. Voglio integrare queste novità nell'app esistente, non ricostruirla da zero.
+
+## 1. Gestione degli incantesimi giornalieri
+
+Implementa un sistema che permetta all'utente di creare e gestire il proprio personaggio e tenere traccia degli incantesimi che può utilizzare durante la giornata.
+
+### Scheda del personaggio
+La scheda deve permettere di:
+- Inserire il nome del personaggio.
+- Selezionare una o più classi.
+- Impostare il livello di ogni classe.
+- Visualizzare il livello complessivo del personaggio e i livelli delle singole classi.
+- Selezionare le caratteristiche rilevanti per il lancio degli incantesimi, come Intelligenza, Saggezza e Carisma.
+- Modificare i dati del personaggio in qualsiasi momento.
+
+### Slot degli incantesimi
+Per ogni classe che utilizza la magia, mostra una sezione dedicata agli slot giornalieri, organizzata per livello dell'incantesimo: 0°, 1°, 2°, 3° e così via, secondo le regole applicabili alla classe.
+
+Per ogni livello degli incantesimi, visualizza:
+- Numero di slot disponibili al giorno.
+- Numero di slot già utilizzati.
+- Numero di slot ancora disponibili.
+- Bonus agli incantesimi dovuti alla caratteristica pertinente.
+- Eventuali slot aggiuntivi o limitazioni previsti dalle regole della classe.
+
+L'interfaccia deve consentire di:
+- Segnare un incantesimo come utilizzato.
+- Ripristinare uno slot quando necessario.
+- Annullare un utilizzo registrato per errore.
+- Ripristinare tutti gli slot al termine del riposo giornaliero, tramite un pulsante di conferma.
+- Visualizzare chiaramente gli slot esauriti e quelli ancora disponibili.
+
+### Preparazione degli incantesimi
+Tieni conto delle differenze tra le classi:
+- **Classi che preparano gli incantesimi**, come il mago e il chierico: consentire di preparare gli incantesimi negli slot previsti.
+- **Classi che lanciano spontaneamente**, come lo stregone e il bardo: consentire di scegliere gli incantesimi conosciuti e utilizzare gli slot disponibili per lanciarli.
+- Gestire correttamente gli incantesimi di livello 0 e le eventuali regole specifiche della classe.
+
+Non applicare un unico sistema indistinto a tutte le classi: la gestione deve rispettare le meccaniche di D&D 3.5.
+
+## 2. Supporto multiclasse
+
+Voglio poter creare personaggi con più classi contemporaneamente, per esempio:
+- Ladro 3 / Chierico 2.
+- Guerriero 2 / Mago 4.
+- Ladro 2 / Mago 3 / Chierico 1.
+
+L'utente deve poter aggiungere, modificare e rimuovere le classi del personaggio, impostando il livello di ciascuna separatamente.
+
+### Regole multiclasse
+Implementa queste regole:
+- Il livello complessivo del personaggio è la somma dei livelli di tutte le classi.
+- Il livello di classe deve essere mantenuto separato dal livello complessivo.
+- Gli incantesimi disponibili devono dipendere dal livello della specifica classe incantatrice, non dal livello totale del personaggio.
+- Ogni classe deve mantenere la propria progressione magica, i propri incantesimi conosciuti o preparati e i propri slot giornalieri.
+- Le classi che utilizzano caratteristiche magiche differenti devono essere gestite separatamente.
+- Gli slot di una classe non devono essere utilizzabili per lanciare incantesimi di un'altra classe, salvo eccezioni esplicitamente previste dalle regole.
+- Gli incantesimi devono essere associati alla corretta classe e al corretto livello.
+- Un personaggio multiclasse può avere più sezioni di gestione della magia, una per ogni classe incantatrice.
+
+Esempio: per un personaggio Ladro 3 / Chierico 2, la scheda deve mostrare un livello complessivo pari a 5, ma la progressione degli incantesimi da chierico deve essere calcolata utilizzando il livello da chierico pari a 2, non il livello complessivo pari a 5.
+
+Se una classe non possiede capacità di lancio degli incantesimi, non deve ricevere slot magici.
+
+## 3. Integrazione con il catalogo degli incantesimi
+
+Integra le nuove funzioni con il catalogo degli incantesimi già presente nell'app.
+
+Voglio poter:
+- Cercare gli incantesimi per nome.
+- Filtrare per classe e livello.
+- Aggiungere un incantesimo agli incantesimi conosciuti o preparati del personaggio.
+- Visualizzare la descrizione dell'incantesimo dalla scheda del personaggio.
+- Segnare l'incantesimo come lanciato quando appropriato.
+- Distinguere gli incantesimi conosciuti, preparati e già utilizzati.
+
+Non duplicare inutilmente i dati degli incantesimi. Utilizza gli identificativi e il modello dati già esistenti, se disponibili.
+
+## 4. Calcolo automatico e correttezza delle regole
+
+Automatizza i calcoli quando i dati necessari sono disponibili.
+
+Il sistema deve considerare:
+- Livello della singola classe incantatrice.
+- Caratteristica magica pertinente.
+- Bonus agli slot dovuti alla caratteristica.
+- Progressione degli slot della classe.
+- Eventuali talenti, capacità o eccezioni supportati dall'app.
+
+**Non inventare progressioni o regole mancanti.** Se le tabelle delle classi o i dati necessari non sono presenti nel progetto, individua quali dati servono e implementa la soluzione in modo che possano essere aggiunti successivamente. Se una regola è ambigua, documenta l'ipotesi adottata.
+
+Per D&D 3.5, rispetta le differenze tra incantatori preparati e spontanei e non presumere che tutte le classi seguano la stessa progressione.
+
+## 5. Interfaccia utente
+
+Mantieni lo stile grafico attuale dell'app e integra le nuove funzionalità in modo coerente.
+
+La schermata del personaggio dovrebbe includere:
+- Informazioni generali del personaggio.
+- Classi e livelli.
+- Una sezione separata per ogni classe incantatrice.
+- Slot giornalieri suddivisi per livello.
+- Elenco degli incantesimi conosciuti o preparati.
+- Comandi rapidi per segnare un incantesimo come utilizzato o ripristinarlo.
+
+L'interfaccia deve essere intuitiva, leggibile e utilizzabile anche da smartphone.
+
+## 6. Salvataggio dei dati
+
+I dati del personaggio devono rimanere disponibili quando l'utente ricarica la pagina o chiude e riapre l'app.
+
+Prima di implementare il salvataggio:
+- Analizza il sistema di persistenza già presente.
+- Riutilizza il database o il sistema di salvataggio esistente.
+- Se non esiste un sistema persistente, proponi una soluzione adeguata alla struttura attuale.
+- Evita di perdere i personaggi e i dati già creati quando il progetto viene aggiornato.
+- Mantieni separati i dati permanenti del personaggio e lo stato giornaliero degli slot utilizzati.
+
+Se implementi il ripristino giornaliero, non azzerare automaticamente gli slot sulla base di un semplice cambio di data senza tenere conto del riposo e delle regole applicabili.
+
+## 7. Verifica e test
+
+Prima di concludere, verifica almeno questi casi:
+
+**Caso A — Incantatore singolo**
+Un mago deve vedere gli slot previsti per il proprio livello e poter preparare e utilizzare gli incantesimi.
+
+**Caso B — Incantatore spontaneo**
+Uno stregone deve poter gestire gli incantesimi conosciuti e consumare gli slot quando lancia un incantesimo.
+
+**Caso C — Personaggio multiclasse**
+Un ladro 3 / chierico 2 deve avere livello complessivo 5 e una progressione magica da chierico di livello 2.
+
+**Caso D — Due classi incantatrici**
+Un personaggio mago 3 / chierico 2 deve avere due progressioni magiche separate, con i rispettivi slot, incantesimi e caratteristiche magiche.
+
+**Caso E — Persistenza**
+Dopo aver modificato il personaggio, preparato incantesimi e utilizzato slot, un aggiornamento della pagina non deve cancellare i dati.
+
+**Caso F — Modifiche ai livelli**
+Se l'utente modifica il livello di una classe, il sistema deve aggiornare le progressioni pertinenti senza cancellare silenziosamente dati o scelte incompatibili.
+
+**Caso G — Errori e regressioni**
+Verifica che le funzioni esistenti, il catalogo e la ricerca degli incantesimi continuino a funzionare.
+
+## 8. Modalità di lavoro
+
+Procedi nel seguente ordine:
+
+1. Analizza il progetto e identifica i file responsabili di personaggi, incantesimi, livelli, persistenza e interfaccia.
+2. Spiega brevemente quali componenti riutilizzerai e quali dovrai modificare.
+3. Individua eventuali dati mancanti necessari per applicare correttamente le regole di D&D 3.5.
+4. Implementa le nuove funzionalità direttamente nel progetto esistente.
+5. Esegui i controlli e i test disponibili.
+6. Risolvi gli errori introdotti dalle modifiche.
+7. Fornisci un riepilogo dei file modificati, delle funzionalità completate e delle eventuali limitazioni rimaste.
+
+Non limitarti a descrivere come si potrebbe implementare il sistema: **modifica concretamente il codice del progetto**.
+
+Non cancellare funzionalità esistenti, non riscrivere inutilmente file già funzionanti e non dichiarare completato un test che non hai realmente eseguito.
+
+Se trovi errori preesistenti, inclusi eventuali duplicati di funzioni o dichiarazioni, distinguili dagli errori introdotti dalle nuove modifiche e risolvili solo se necessario per un'integrazione sicura.
+
+L'obiettivo finale è ottenere una gestione dei personaggi di D&D 3.5 che supporti classi singole e multiclasse, permetta di preparare o conoscere gli incantesimi e tenga traccia degli slot giornalieri in modo corretto, persistente e facile da utilizzare.

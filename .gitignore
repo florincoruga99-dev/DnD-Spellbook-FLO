@@ -31,6 +31,7 @@ node_modules
 /.sass-cache
 /connect.lock
 /coverage
+.agents/outputs/dnd35-progression-pages/
 /libpeerconnection.log
 npm-debug.log
 yarn-error.log
