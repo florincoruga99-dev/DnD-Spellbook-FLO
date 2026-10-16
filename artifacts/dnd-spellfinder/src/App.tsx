@@ -5,24 +5,36 @@ import { SpellDetail } from './components/SpellDetail';
 import {
   CLERIC_DOMAIN_NAMES,
   CORE_CHARACTER_CLASSES,
+  CORE_CHARACTER_RACES,
   WIZARD_SPECIALIZATION_SCHOOLS,
 } from './data/class-spell-progressions';
 import {
   addClassToCharacter, addKnownSpell, canCastKnownSpell, canPrepareSpellInSlot,
-  createEmptyCharacter, getCastingAbility, getCastingMode, getDailySpellSlots,
-  getSlotUsage, getSpellIdentifier, getSpellLevelForClass, getSpellLevelSummaries,
+  CHARACTER_ABILITY_KEYS, createEmptyCharacter, getCastingAbilityForEntry,
+  getCastingMode, getCastingModeForEntry, getDailySpellSlots, getSlotUsage,
+  getSpellIdentifier, getSpellLevelForClass, getSpellLevelForEntry, getSpellLevelSummaries,
   getClassSpellLevels, getRequiredOppositionSchoolCount, getTotalCharacterLevel,
+  isSpellcastingEntry,
   loadCharacterSheet, recordPreparedCast,
   recordSpontaneousCast, removeClassFromCharacter, resetDailyUses, restoreDailySlot,
-  saveCharacterSheet, setManualBonusSlots, setPreparedSpell, updateClassLevel,
+  saveCharacterSheet, setAbilityScore, setCustomDailySlots, setCustomSpellcasting,
+  setCustomSpellLevel, setManualBonusSlots, setPreparedSpell, updateClassLevel,
   type AbilityScores, type CharacterClassEntry, type CharacterSheet,
 } from './lib/character';
 
 const levels = ['Tutti i livelli', 'Trucchetto', ...Array.from({ length: 9 }, (_, i) => `Livello ${i + 1}`)];
 const schoolShort: Record<string, string> = { Abiurazione: 'AB', Ammaliamento: 'AM', Divinazione: 'DI', Illusione: 'IL', Invocazione: 'IN', Necromanzia: 'NE', Trasmutazione: 'TR', Evocazione: 'EV' };
-const abilityNames: Record<keyof AbilityScores, string> = { intelligence: 'Intelligenza', wisdom: 'Saggezza', charisma: 'Carisma' };
+const abilityNames: Record<keyof AbilityScores, string> = {
+  strength: 'Forza',
+  dexterity: 'Destrezza',
+  constitution: 'Costituzione',
+  intelligence: 'Intelligenza',
+  wisdom: 'Saggezza',
+  charisma: 'Carisma',
+};
 const sourceNames: Record<string, string> = { classe: 'Classe', caratteristica: 'Caratteristica', dominio: 'Dominio', specializzazione: 'Specializzazione', aggiuntivo: 'Aggiuntivo' };
 const spellKey = (spell: Spell) => getSpellIdentifier(spell);
+const partyArtUrl = `${import.meta.env.BASE_URL}images/dnd35-adventuring-party.jpg`;
 
 function getInitialCharacter(): { character: CharacterSheet; error: string } {
   try {
@@ -57,6 +69,8 @@ function App() {
   const [activeCharacterClass, setActiveCharacterClass] = useState('');
   const [characterSpellDetail, setCharacterSpellDetail] = useState<Spell | null>(null);
   const [spontaneousChoices, setSpontaneousChoices] = useState<Record<string, string>>({});
+  const [abilityDrafts, setAbilityDrafts] = useState<Partial<Record<keyof AbilityScores, string>>>({});
+  const [customSpellLevelDrafts, setCustomSpellLevelDrafts] = useState<Record<string, string>>({});
   const fileRef = useRef<HTMLInputElement>(null);
 
   const schools = useMemo(() => [...new Set(spells.map((spell) => schoolBase(spell.school)).filter(Boolean))].sort(), [spells]);
@@ -82,6 +96,32 @@ function App() {
   const patchCharacter = (patch: Partial<CharacterSheet>) => commitCharacter({ ...character, ...patch });
   const updateEntry = (id: string, updater: (entry: CharacterClassEntry) => CharacterClassEntry) =>
     commitCharacter({ ...character, classes: character.classes.map((entry) => entry.id === id ? updater(entry) : entry) });
+  const changeCustomSpellcasting = (
+    entry: CharacterClassEntry,
+    changes: Partial<CharacterClassEntry['customSpellcasting']>,
+  ) => {
+    try { commitCharacter(setCustomSpellcasting(character, entry.id, changes)); }
+    catch (error) { setSheetMessage(error instanceof Error ? error.message : 'Impossibile modificare la magia personalizzata.'); }
+  };
+  const changeCustomDailySlots = (entry: CharacterClassEntry, spellLevel: number, count: number) => {
+    try { commitCharacter(setCustomDailySlots(character, entry.id, spellLevel, count)); }
+    catch (error) { setSheetMessage(error instanceof Error ? error.message : 'Impossibile aggiornare gli slot personalizzati.'); }
+  };
+  const changeCustomSpellLevel = (entry: CharacterClassEntry, spell: Spell, rawLevel: string) => {
+    const draftKey = `${entry.id}:${spellKey(spell)}`;
+    setCustomSpellLevelDrafts((current) => ({ ...current, [draftKey]: rawLevel }));
+    if (rawLevel === '') return;
+    const spellLevel = Number(rawLevel);
+    if (!Number.isInteger(spellLevel) || spellLevel < 0 || spellLevel > 9) return;
+    try { commitCharacter(setCustomSpellLevel(character, entry.id, spellKey(spell), spellLevel)); }
+    catch (error) { setSheetMessage(error instanceof Error ? error.message : 'Impossibile assegnare il livello personalizzato.'); }
+  };
+  const clearCustomSpellLevelDraft = (draftKey: string) =>
+    setCustomSpellLevelDrafts((current) => {
+      const next = { ...current };
+      delete next[draftKey];
+      return next;
+    });
   const importFile = async (file?: File) => {
     if (!file) return;
     try {
@@ -106,6 +146,7 @@ function App() {
   };
   const catalogForClass = (entry: CharacterClassEntry) => spells.filter((spell) =>
     (
+      (entry.customSpellcasting.enabled && getCastingMode(entry.name) === null) ||
       getSpellLevelForClass(spell, entry.name) !== null ||
       (entry.name === 'Chierico' && spell.classLevels.some((classLevel) =>
         entry.domainNames.filter(Boolean).includes(classLevel.className),
@@ -116,12 +157,25 @@ function App() {
   const addSpellToClass = (entry: CharacterClassEntry, spell: Spell) => {
     const identifier = spellKey(spell);
     if (entry.knownSpellIds.includes(identifier)) return;
+    const isDomainSpell = entry.name === 'Chierico' && spell.classLevels.some((classLevel) =>
+      entry.domainNames.filter(Boolean).includes(classLevel.className),
+    );
+    if (
+      entry.customSpellcasting.enabled &&
+      getCastingMode(entry.name) === null &&
+      getSpellLevelForClass(spell, entry.name) === null &&
+      !isDomainSpell &&
+      entry.customSpellLevels[identifier] === undefined
+    ) {
+      setSheetMessage('Assegna prima il livello dell’incantesimo nella classe personalizzata.');
+      return;
+    }
     try { commitCharacter(addKnownSpell(character, entry.id, spell)); }
     catch (error) { setSheetMessage(error instanceof Error ? error.message : 'Impossibile aggiungere l’incantesimo.'); }
   };
   const getSpell = (id: string | undefined) => spells.find((spell) => spellKey(spell) === id);
   const spellLevelForEntry = (entry: CharacterClassEntry, spell: Spell) =>
-    getSpellLevelForClass(spell, entry.name) ??
+    getSpellLevelForEntry(entry, spell) ??
     (entry.name === 'Chierico'
       ? spell.classLevels.find((classLevel) =>
           entry.domainNames.filter(Boolean).includes(classLevel.className),
@@ -136,7 +190,7 @@ function App() {
     const spell = getSpell(spellId);
     if (!spell) return;
     try {
-      const next = getCastingMode(entry.name) === 'prepared'
+      const next = getCastingModeForEntry(entry) === 'prepared'
         ? recordPreparedCast(character, entry.id, slotId, spell)
         : recordSpontaneousCast(character, entry.id, slotId, spell);
       commitCharacter(next);
@@ -228,35 +282,77 @@ function App() {
           </section>
         </section>
       </> : <section className="character-page">
-        <div className="character-heading"><div><div className="eyebrow"><span className="eyebrow-line" /> SCHEDA PERSONAGGIO · D&D 3.5</div><h1>La tua magia,<br /><em>pronta per la partita.</em></h1><p>Risorse e incantesimi distinti per ogni classe, salvati in locale.</p></div><div className="character-total"><span>LIVELLO TOTALE</span><strong data-testid="text-total-level">{getTotalCharacterLevel(character)}</strong><small>{character.classes.length} {character.classes.length === 1 ? 'classe' : 'classi'}</small></div></div>
+        <div className="character-heading"><div><div className="eyebrow"><span className="eyebrow-line" /> SCHEDA PERSONAGGIO · D&D 3.5</div><h1>La tua magia,<br /><em>pronta per la partita.</em></h1><p>Risorse e incantesimi distinti per ogni classe, salvati in locale.</p></div><div className="character-art"><img src={partyArtUrl} alt="Illustrazione originale di un gruppo fantasy con razze e classi diverse." loading="lazy" /></div><div className="character-total"><span>LIVELLO TOTALE</span><strong data-testid="text-total-level">{getTotalCharacterLevel(character)}</strong><small>{character.classes.length} {character.classes.length === 1 ? 'classe' : 'classi'}</small></div></div>
         {sheetMessage && <p className={characterLoadError ? 'sheet-save-message error' : 'sheet-save-message'} role={characterLoadError ? 'alert' : 'status'} data-testid="status-character-save">{sheetMessage}</p>}
         <div className="sheet-layout">
           <aside className="sheet-sidebar">
             <section className="sheet-card identity-card"><div className="sheet-section-heading"><span className="section-index">01</span><div><h2>Identità</h2><p>Una scheda, un personaggio.</p></div></div>
               <label className="sheet-label" htmlFor="character-name">NOME DEL PERSONAGGIO</label><input id="character-name" className="sheet-input" value={character.name} onChange={(e) => patchCharacter({ name: e.target.value })} placeholder="Es. Livia delle Selve" data-testid="input-character-name" />
-              <div className="ability-title"><span>CARATTERISTICHE DA INCANTATORE</span><span>01—40</span></div>
-              <div className="ability-grid">{(Object.keys(abilityNames) as Array<keyof AbilityScores>).map((ability) => <label className="ability-field" key={ability}><span>{abilityNames[ability]}</span><input aria-label={abilityNames[ability]} type="number" min="1" max="40" value={character.abilities[ability]} onChange={(e) => {
-                const value = Math.max(1, Math.min(40, Number(e.target.value) || 1));
-                patchCharacter({ abilities: { ...character.abilities, [ability]: value } });
+              <label className="sheet-label" htmlFor="character-race">RAZZA</label><input id="character-race" className="sheet-input" list="dnd35-races" value={character.race} onChange={(e) => patchCharacter({ race: e.target.value })} placeholder="Scegli o scrivi una razza" data-testid="input-character-race" /><datalist id="dnd35-races">{CORE_CHARACTER_RACES.map((race) => <option key={race} value={race} />)}</datalist>
+              <div className="ability-title"><span>CARATTERISTICHE</span><span>01—40</span></div>
+              <div className="ability-grid">{CHARACTER_ABILITY_KEYS.map((ability) => <label className="ability-field" key={ability}><span>{abilityNames[ability]}</span><input aria-label={abilityNames[ability]} type="text" inputMode="numeric" pattern="[0-9]*" maxLength={2} value={abilityDrafts[ability] ?? String(character.abilities[ability])} onFocus={(event) => event.currentTarget.select()} onChange={(event) => {
+                const raw = event.currentTarget.value.replace(/\D/g, '').slice(0, 2);
+                setAbilityDrafts((current) => ({ ...current, [ability]: raw }));
+                const score = Number(raw);
+                if (raw !== '' && Number.isInteger(score) && score >= 1 && score <= 40) {
+                  try { commitCharacter(setAbilityScore(character, ability, score)); }
+                  catch (error) { setSheetMessage(error instanceof Error ? error.message : 'Impossibile aggiornare la caratteristica.'); }
+                }
+              }} onBlur={() => {
+                const raw = abilityDrafts[ability];
+                if (raw !== undefined) {
+                  const score = Number(raw);
+                  if (raw !== '' && Number.isInteger(score) && score >= 1 && score <= 40) {
+                    if (score !== character.abilities[ability]) {
+                      try { commitCharacter(setAbilityScore(character, ability, score)); }
+                      catch (error) { setSheetMessage(error instanceof Error ? error.message : 'Impossibile aggiornare la caratteristica.'); }
+                    }
+                  }
+                  setAbilityDrafts((current) => {
+                    const next = { ...current };
+                    delete next[ability];
+                    return next;
+                  });
+                }
               }} data-testid={`input-ability-${ability}`} /></label>)}</div>
               <p className="local-note"><ShieldAlert size={14} /> La scheda resta salvata solo su questo browser e dispositivo.</p>
             </section>
             <section className="sheet-card class-manager"><div className="sheet-section-heading"><span className="section-index">02</span><div><h2>Classi</h2><p>Livelli del personaggio.</p></div></div>
               <label className="sheet-label" htmlFor="add-class-select">AGGIUNGI UNA CLASSE</label><div className="add-class-row"><select id="add-class-select" defaultValue="" data-testid="select-add-class"><option value="" disabled>Scegli una classe…</option>{CORE_CHARACTER_CLASSES.filter((name) => !character.classes.some((entry) => entry.name === name)).map((name) => <option key={name}>{name}</option>)}</select><button aria-label="Aggiungi classe" data-testid="button-add-class" onClick={() => { const select = document.getElementById('add-class-select') as HTMLSelectElement | null; if (select?.value) { addClass(select.value); select.value = ''; } }}><Plus size={16} /></button></div>
-              {character.classes.length === 0 ? <div className="class-empty"><span><Swords size={18} /></span><b>Nessuna classe aggiunta</b><small>Scegli una classe per costruire la scheda.</small></div> : <div className="class-summary-list">{character.classes.map((entry) => <div className={`class-summary ${activeCharacterClass === entry.id ? 'chosen' : ''}`} key={entry.id}><button className="class-summary-name" onClick={() => setActiveCharacterClass(entry.id)} data-testid={`button-select-class-${entry.id}`}><span className="class-monogram">{entry.name.slice(0, 1)}</span><span><b>{entry.name}</b><small>{getCastingMode(entry.name) ? (getCastingMode(entry.name) === 'prepared' ? 'Incantatore · prepara' : 'Incantatore · spontaneo') : 'Nessun incantesimo di classe'}</small></span></button><label className="level-stepper"><span>Liv.</span><button aria-label={`Riduci livello ${entry.name}`} onClick={() => { if (entry.level > 1) commitCharacter(updateClassLevel(character, entry.id, entry.level - 1)); }} data-testid={`button-level-down-${entry.id}`}><Minus size={12} /></button><input aria-label={`Livello ${entry.name}`} type="number" min="1" max="20" value={entry.level} onChange={(e) => { const value = Number(e.target.value); if (Number.isInteger(value) && value >= 1 && value <= 20) commitCharacter(updateClassLevel(character, entry.id, value)); }} data-testid={`input-class-level-${entry.id}`} /><button aria-label={`Aumenta livello ${entry.name}`} onClick={() => { if (entry.level < 20) commitCharacter(updateClassLevel(character, entry.id, entry.level + 1)); }} data-testid={`button-level-up-${entry.id}`}><Plus size={12} /></button></label><button className="remove-class" aria-label={`Rimuovi ${entry.name}`} title={`Rimuovi ${entry.name}`} onClick={() => { if (window.confirm(`Rimuovere ${entry.name} dalla scheda? Gli incantesimi e gli slot associati saranno rimossi.`)) { const next = removeClassFromCharacter(character, entry.id); commitCharacter(next); if (activeCharacterClass === entry.id) setActiveCharacterClass(next.classes[0]?.id ?? ''); } }} data-testid={`button-remove-class-${entry.id}`}><Trash2 size={14} /></button></div>)}</div>}
+              {character.classes.length === 0 ? <div className="class-empty"><span><Swords size={18} /></span><b>Nessuna classe aggiunta</b><small>Scegli una classe per costruire la scheda.</small></div> : <div className="class-summary-list">{character.classes.map((entry) => {
+                const classMode = getCastingModeForEntry(entry);
+                return <div className={`class-summary ${activeCharacterClass === entry.id ? 'chosen' : ''}`} key={entry.id}>
+                  <button className="class-summary-name" onClick={() => setActiveCharacterClass(entry.id)} data-testid={`button-select-class-${entry.id}`}><span className="class-monogram">{entry.name.slice(0, 1)}</span><span><b>{entry.name}</b><small>{classMode ? (classMode === 'prepared' ? 'Incantatore · prepara' : 'Incantatore · spontaneo') : 'Nessun incantesimo di classe'}</small></span></button>
+                  <label className="level-stepper"><span>Liv.</span><button aria-label={`Riduci livello ${entry.name}`} onClick={() => { if (entry.level > 1) commitCharacter(updateClassLevel(character, entry.id, entry.level - 1)); }} data-testid={`button-level-down-${entry.id}`}><Minus size={12} /></button><input aria-label={`Livello ${entry.name}`} type="number" min="1" max="20" value={entry.level} onChange={(e) => { const value = Number(e.target.value); if (Number.isInteger(value) && value >= 1 && value <= 20) commitCharacter(updateClassLevel(character, entry.id, value)); }} data-testid={`input-class-level-${entry.id}`} /><button aria-label={`Aumenta livello ${entry.name}`} onClick={() => { if (entry.level < 20) commitCharacter(updateClassLevel(character, entry.id, entry.level + 1)); }} data-testid={`button-level-up-${entry.id}`}><Plus size={12} /></button></label>
+                  <button className="remove-class" aria-label={`Rimuovi ${entry.name}`} title={`Rimuovi ${entry.name}`} onClick={() => { if (window.confirm(`Rimuovere ${entry.name} dalla scheda? Gli incantesimi e gli slot associati saranno rimossi.`)) { const next = removeClassFromCharacter(character, entry.id); commitCharacter(next); if (activeCharacterClass === entry.id) setActiveCharacterClass(next.classes[0]?.id ?? ''); } }} data-testid={`button-remove-class-${entry.id}`}><Trash2 size={14} /></button>
+                  {!getCastingMode(entry.name) && <button className="custom-magic-toggle" aria-pressed={entry.customSpellcasting.enabled} onClick={() => changeCustomSpellcasting(entry, { enabled: !entry.customSpellcasting.enabled })} data-testid={`button-custom-magic-${entry.id}`}>{entry.customSpellcasting.enabled ? 'Disattiva magia personalizzata' : 'Configura magia personalizzata'}</button>}
+                </div>;
+              })}</div>}
             </section>
           </aside>
           <div className="class-resources">
-            {character.classes.filter((entry) => getCastingMode(entry.name)).length === 0 ? <section className="resource-empty"><div className="empty-icon"><WandSparkles size={22} /></div><h2>La pagina degli incantesimi è vuota</h2><p>Aggiungi una classe incantatrice per vedere livelli, preparazione e usi giornalieri. Le classi senza magia non hanno una sezione risorse.</p></section> : character.classes.filter((entry) => getCastingMode(entry.name)).map((entry) => {
-              const mode = getCastingMode(entry.name)!;
-              const ability = getCastingAbility(entry.name)!;
+            {character.classes.filter(isSpellcastingEntry).length === 0 ? <section className="resource-empty"><div className="empty-icon"><WandSparkles size={22} /></div><h2>La pagina degli incantesimi è vuota</h2><p>Aggiungi una classe incantatrice o configura la magia personalizzata per visualizzare preparazione e usi giornalieri.</p></section> : character.classes.filter(isSpellcastingEntry).map((entry) => {
+              const mode = getCastingModeForEntry(entry)!;
+              const ability = getCastingAbilityForEntry(entry)!;
               const summaries = getSpellLevelSummaries(entry, character.abilities);
               const knownSpells = entry.knownSpellIds.map((id) => getSpell(id)).filter((spell): spell is Spell => Boolean(spell));
               const classSpells = catalogForClass(entry);
               const orphans = orphanAssignments(entry);
               return <section className={`resource-card ${activeCharacterClass === entry.id ? 'resource-active' : ''}`} key={entry.id} data-testid={`section-resources-${entry.id}`}>
-                <div className="resource-head"><div className="resource-title"><span className="resource-symbol"><WandSparkles size={17} /></span><div><span className="resource-kicker">{mode === 'prepared' ? 'PREPARAZIONE GIORNALIERA' : 'INCANTATORE SPONTANEO'}</span><h2>{entry.name} <small>livello {entry.level}</small></h2></div></div><button className="reset-day" onClick={() => { if (window.confirm('Ripristinare gli slot usati di tutte le classi? Le preparazioni resteranno invariate.')) { commitCharacter(resetDailyUses(character)); } }} data-testid={`button-reset-daily-${entry.id}`}><RotateCcw size={14} /> Ripristina tutti gli slot</button></div>
+                <div className="resource-head"><div className="resource-title"><span className="resource-symbol"><WandSparkles size={17} /></span><div><span className="resource-kicker">{entry.customSpellcasting.enabled && !getCastingMode(entry.name) ? 'MAGIA PERSONALIZZATA' : mode === 'prepared' ? 'PREPARAZIONE GIORNALIERA' : 'INCANTATORE SPONTANEO'}</span><h2>{entry.name} <small>livello {entry.level}</small></h2></div></div><button className="reset-day" onClick={() => { if (window.confirm('Ripristinare gli slot usati di tutte le classi? Le preparazioni resteranno invariate.')) { commitCharacter(resetDailyUses(character)); } }} data-testid={`button-reset-daily-${entry.id}`}><RotateCcw size={14} /> Ripristina tutti gli slot</button></div>
                 <div className="resource-meta"><span><b>Caratteristica</b>{abilityNames[ability]} · {character.abilities[ability]} ({Math.floor((character.abilities[ability] - 10) / 2) >= 0 ? '+' : ''}{Math.floor((character.abilities[ability] - 10) / 2)})</span><span><b>Metodo</b>{mode === 'prepared' ? 'Incantesimi preparati' : 'Incantesimi conosciuti'}</span><span><b>Repertorio</b>{knownSpells.length} {knownSpells.length === 1 ? 'incantesimo' : 'incantesimi'}</span></div>
+                {entry.customSpellcasting.enabled && !getCastingMode(entry.name) && (
+                  <section className="custom-magic-settings" aria-label={`Impostazioni magia personalizzata per ${entry.name}`}>
+                    <div className="custom-magic-heading"><div><h3>Magia personalizzata</h3><p>Nessuna progressione standard applicata: imposta qui le regole della campagna.</p></div></div>
+                    <div className="custom-magic-controls">
+                      <label><span>Metodo</span><select value={entry.customSpellcasting.mode} onChange={(event) => changeCustomSpellcasting(entry, { mode: event.target.value as 'prepared' | 'spontaneous' })} aria-label={`Metodo di lancio per ${entry.name}`}><option value="prepared">Incantesimi preparati</option><option value="spontaneous">Incantesimi spontanei</option></select></label>
+                      <label><span>Caratteristica chiave</span><select value={entry.customSpellcasting.ability} onChange={(event) => changeCustomSpellcasting(entry, { ability: event.target.value as keyof AbilityScores })} aria-label={`Caratteristica magica per ${entry.name}`}>{CHARACTER_ABILITY_KEYS.map((key) => <option key={key} value={key}>{abilityNames[key]}</option>)}</select></label>
+                      <label><span>Livello massimo</span><select value={entry.customSpellcasting.maxSpellLevel} onChange={(event) => changeCustomSpellcasting(entry, { maxSpellLevel: Number(event.target.value) })} aria-label={`Livello massimo degli incantesimi per ${entry.name}`}>{Array.from({ length: 10 }, (_, spellLevel) => <option key={spellLevel} value={spellLevel}>{spellLevel === 0 ? '0 · Trucchetti' : `${spellLevel}° livello`}</option>)}</select></label>
+                      <label className="custom-bonus-toggle"><input type="checkbox" checked={entry.customSpellcasting.useAbilityBonusSlots} onChange={(event) => changeCustomSpellcasting(entry, { useAbilityBonusSlots: event.target.checked })} /><span>Aggiungi slot bonus dalla caratteristica</span></label>
+                    </div>
+                    <div className="custom-daily-slots"><b>Slot giornalieri manuali</b><div>{Array.from({ length: entry.customSpellcasting.maxSpellLevel + 1 }, (_, spellLevel) => <label key={spellLevel}><span>{spellLevel === 0 ? 'Trucchetti' : `${spellLevel}° livello`}</span><input type="number" min="0" max="99" value={entry.customSpellcasting.dailySlots[String(spellLevel)] ?? 0} onChange={(event) => changeCustomDailySlots(entry, spellLevel, Math.max(0, Math.min(99, Number(event.target.value) || 0)))} aria-label={`Slot giornalieri personalizzati di ${spellLevel}° livello per ${entry.name}`} data-testid={`input-custom-slots-${entry.id}-${spellLevel}`} /></label>)}</div></div>
+                  </section>
+                )}
                 <div className="class-rule-options">
                   {entry.name === 'Chierico' && (
                     <details className="class-rule-details">
@@ -358,7 +454,7 @@ function App() {
                   </details>
                 </div>
                 {orphans.length > 0 && <div className="orphan-warning" role="status" data-testid={`status-orphan-slots-${entry.id}`}><ShieldAlert size={17} /><span><b>Assegnazioni non disponibili</b>{orphans.length} assegnazioni salvate non corrispondono agli slot o ai requisiti attuali. Restano conservate: rivedi il livello, la caratteristica e il repertorio prima di modificarle.</span></div>}
-                <div className="slots-heading"><div><h3>Slot giornalieri</h3><p>Le progressioni seguono le regole della classe. Le assegnazioni restano salvate anche se non più accessibili.</p></div></div>
+                <div className="slots-heading"><div><h3>Slot giornalieri</h3><p>{entry.customSpellcasting.enabled && !getCastingMode(entry.name) ? 'Gli slot di questa classe sono definiti manualmente e restano distinti da quelli delle altre classi.' : 'Le progressioni seguono le regole della classe. Le assegnazioni restano salvate anche se non più accessibili.'}</p></div></div>
                 {summaries.length ? <div className="slot-level-list">{summaries.map((summary) => <div className="slot-level" key={summary.spellLevel} data-testid={`slot-level-${entry.id}-${summary.spellLevel}`}><div className="slot-level-label"><b>{summary.spellLevel === 0 ? 'Trucchetti' : `${summary.spellLevel}° livello`}</b><span>{summary.total} slot</span><small className="slot-count-summary">{summary.slots.filter((slot) => entry.usedSlots[slot.id]).length} usati · {summary.slots.filter((slot) => slot.canCast && !entry.usedSlots[slot.id]).length} disponibili{summary.slots.some((slot) => !slot.canCast) ? ` · ${summary.slots.filter((slot) => !slot.canCast).length} non utilizzabili` : ''}</small><small>{summary.base} classe{summary.abilityBonus ? ` · ${summary.abilityBonus} caratteristica` : ''}{summary.domainBonus ? ` · ${summary.domainBonus} dominio` : ''}{summary.specialistBonus ? ` · ${summary.specialistBonus} specializzazione` : ''}{summary.manualBonus ? ` · ${summary.manualBonus} aggiuntivi` : ''}</small></div>
                     <div className="slot-list">{summary.slots.map((slot) => {
                       const usage = getSlotUsage(entry, slot);
@@ -369,7 +465,7 @@ function App() {
                         canPrepareSpellInSlot(entry, character.abilities, slot, spell),
                       );
                       const validSpontaneous = knownSpells.filter((spell) =>
-                        getSpellLevelForClass(spell, entry.name) === slot.spellLevel &&
+                        spellLevelForEntry(entry, spell) === slot.spellLevel &&
                         canCastKnownSpell(entry, character.abilities, spell),
                       );
                       const chosen = spontaneousChoices[slot.id] ??
@@ -428,7 +524,45 @@ function App() {
                     })}</div>
                   </div>)}</div> : <div className="no-slots"><p>Nessuno slot giornaliero disponibile a questo livello.</p><small>La tabella della classe non ha ancora sbloccato incantesimi o richiede un punteggio di caratteristica più alto.</small></div>}
                 <div className="repertoire"><div className="repertoire-heading"><div><h3>Repertorio di {entry.name}</h3><p>{mode === 'prepared' ? 'Aggiungi alla lista per poter preparare gli incantesimi negli slot compatibili.' : 'Gli incantesimi conosciuti possono essere lanciati negli slot giornalieri disponibili.'}</p></div><span>{knownSpells.length} in scheda</span></div>
-                  <div className="repertoire-add"><div className="search-box"><Search size={15} /><input type="search" value={characterSearch} onChange={(e) => setCharacterSearch(e.target.value)} placeholder={`Cerca nel catalogo per ${entry.name}…`} aria-label={`Cerca incantesimi per ${entry.name}`} data-testid={`input-repertoire-search-${entry.id}`} /></div><div className="repertoire-catalog">{classSpells.slice(0, 40).map((spell, index) => { const included = entry.knownSpellIds.includes(spellKey(spell)); const spellLevel = getSpellLevelForClass(spell, entry.name); return <div className="repertoire-result" key={`${spellKey(spell)}-${index}`}><span><b>{spell.name}</b><small>{spell.school} · {spellLevel === 0 ? 'Trucchetto' : `${spellLevel}° livello`}</small></span><button disabled={included} onClick={() => addSpellToClass(entry, spell)} aria-label={included ? `${spell.name} già nel repertorio` : `Aggiungi ${spell.name} al repertorio`} data-testid={`button-add-spell-${entry.id}-${index}`}>{included ? <Check size={14} /> : <Plus size={14} />}{included ? 'Aggiunto' : 'Aggiungi'}</button></div>; })}{classSpells.length === 0 && <p className="repertoire-empty">Nessun incantesimo trovato. Prova un altro termine.</p>}{classSpells.length > 40 && <p className="repertoire-more">Mostrati 40 risultati. Restringi la ricerca per trovare gli altri.</p>}</div></div>
+                  <div className="repertoire-add">
+                    <div className="search-box"><Search size={15} /><input type="search" value={characterSearch} onChange={(e) => setCharacterSearch(e.target.value)} placeholder={`Cerca nel catalogo per ${entry.name}…`} aria-label={`Cerca incantesimi per ${entry.name}`} data-testid={`input-repertoire-search-${entry.id}`} /></div>
+                    <div className="repertoire-catalog">
+                      {classSpells.slice(0, 40).map((spell, index) => {
+                        const identifier = spellKey(spell);
+                        const included = entry.knownSpellIds.includes(identifier);
+                        const officialLevel = getSpellLevelForClass(spell, entry.name);
+                        const customLevelRequired = entry.customSpellcasting.enabled && !getCastingMode(entry.name) && officialLevel === null;
+                        const customLevel = entry.customSpellLevels[identifier];
+                        const customLevelTooHigh = customLevelRequired && customLevel !== undefined && customLevel > entry.customSpellcasting.maxSpellLevel;
+                        const levelLabel = customLevelRequired
+                          ? customLevel === undefined ? 'Livello da assegnare' : spellLevelName(customLevel)
+                          : spellLevelName(spellLevelForEntry(entry, spell));
+                        const draftKey = `${entry.id}:${identifier}`;
+                        return <div className="repertoire-result" key={`${identifier}-${index}`}>
+                          <span><b>{spell.name}</b><small>{spell.school} · {levelLabel}</small></span>
+                          {customLevelRequired && (
+                            <label className="custom-spell-level">
+                              <span>Liv.</span>
+                              <input
+                                type="text"
+                                inputMode="numeric"
+                                pattern="[0-9]"
+                                maxLength={1}
+                                value={customSpellLevelDrafts[draftKey] ?? (customLevel === undefined ? '' : String(customLevel))}
+                                aria-label={`Livello di ${spell.name} per ${entry.name}`}
+                                onChange={(event) => changeCustomSpellLevel(entry, spell, event.currentTarget.value.replace(/\D/g, '').slice(0, 1))}
+                                onBlur={() => clearCustomSpellLevelDraft(draftKey)}
+                                data-testid={`input-custom-spell-level-${entry.id}-${index}`}
+                              />
+                            </label>
+                          )}
+                          <button disabled={included || Boolean(customLevelRequired && (customLevel === undefined || customLevelTooHigh))} onClick={() => addSpellToClass(entry, spell)} aria-label={included ? `${spell.name} già nel repertorio` : customLevelRequired && customLevel === undefined ? `Assegna un livello a ${spell.name}` : `Aggiungi ${spell.name} al repertorio`} data-testid={`button-add-spell-${entry.id}-${index}`}>{included ? <Check size={14} /> : <Plus size={14} />}{included ? 'Aggiunto' : 'Aggiungi'}</button>
+                        </div>;
+                      })}
+                      {classSpells.length === 0 && <p className="repertoire-empty">Nessun incantesimo trovato. Prova un altro termine.</p>}
+                      {classSpells.length > 40 && <p className="repertoire-more">Mostrati 40 risultati. Restringi la ricerca per trovare gli altri.</p>}
+                    </div>
+                  </div>
                   {knownSpells.length > 0 && <div className="known-list"><h4>Incantesimi nel repertorio</h4>{knownSpells.map((spell) => <div className="known-spell" key={spellKey(spell)}><span><button className="known-spell-detail" onClick={() => setCharacterSpellDetail(spell)} data-testid={`button-view-spell-detail-${entry.id}-${spellKey(spell)}`}>{spell.name}</button><small>{spellLevelName(spellLevelForEntry(entry, spell))} · {spell.school}</small></span><button aria-label={`Rimuovi ${spell.name} dal repertorio`} onClick={() => { if (window.confirm(`Rimuovere ${spell.name} dal repertorio di ${entry.name}? Le preparazioni salvate non verranno cancellate.`)) updateEntry(entry.id, (current) => ({ ...current, knownSpellIds: current.knownSpellIds.filter((id) => id !== spellKey(spell)) })); }} data-testid={`button-remove-spell-${entry.id}-${spellKey(spell)}`}><Trash2 size={13} /></button></div>)}</div>}
                   {characterSpellDetail && knownSpells.some((spell) => spellKey(spell) === spellKey(characterSpellDetail)) && (
                     <div className="character-spell-detail" data-testid={`spell-detail-character-${entry.id}`}>

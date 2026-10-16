@@ -253,6 +253,16 @@ export const CORE_CHARACTER_CLASSES = [
   'Stregone',
 ] as const;
 
+export const CORE_CHARACTER_RACES = [
+  'Umano',
+  'Nano',
+  'Elfo',
+  'Gnomo',
+  'Mezzelfo',
+  'Mezzorco',
+  'Halfling',
+] as const;
+
 export const CLERIC_DOMAIN_NAMES = [
   'Acqua',
   'Animale',

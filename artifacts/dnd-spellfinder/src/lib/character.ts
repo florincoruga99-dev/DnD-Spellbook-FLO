@@ -6,7 +6,16 @@ import {
 } from '../data/class-spell-progressions';
 import { schoolBase, type Spell } from './spells';
 
-export type AbilityScores = Record<AbilityKey, number>;
+export type CharacterAbilityKey = 'strength' | 'dexterity' | 'constitution' | AbilityKey;
+export type AbilityScores = Record<CharacterAbilityKey, number>;
+export const CHARACTER_ABILITY_KEYS: readonly CharacterAbilityKey[] = [
+  'strength',
+  'dexterity',
+  'constitution',
+  'intelligence',
+  'wisdom',
+  'charisma',
+];
 export type SlotSource =
   | 'classe'
   | 'caratteristica'
@@ -22,14 +31,24 @@ export type CharacterClassEntry = {
   preparedSlots: Record<string, string>;
   usedSlots: Record<string, string>;
   manualBonusSlots: Record<string, number>;
+  customSpellcasting: {
+    enabled: boolean;
+    ability: CharacterAbilityKey;
+    mode: CastingMode;
+    maxSpellLevel: number;
+    dailySlots: Record<string, number>;
+    useAbilityBonusSlots: boolean;
+  };
+  customSpellLevels: Record<string, number>;
   domainNames: string[];
   specializationSchool: string;
   oppositionSchools: string[];
 };
 
 export type CharacterSheet = {
-  version: 1;
+  version: 2;
   name: string;
+  race: string;
   abilities: AbilityScores;
   classes: CharacterClassEntry[];
 };
@@ -56,6 +75,9 @@ export type SpellLevelSummary = {
 export const CHARACTER_STORAGE_KEY = 'dnd35-character-sheet-v1';
 
 export const DEFAULT_ABILITIES: AbilityScores = {
+  strength: 10,
+  dexterity: 10,
+  constitution: 10,
   intelligence: 10,
   wisdom: 10,
   charisma: 10,
@@ -63,8 +85,9 @@ export const DEFAULT_ABILITIES: AbilityScores = {
 
 export function createEmptyCharacter(): CharacterSheet {
   return {
-    version: 1,
+    version: 2,
     name: '',
+    race: '',
     abilities: { ...DEFAULT_ABILITIES },
     classes: [],
   };
@@ -85,6 +108,15 @@ export function createClassEntry(
     preparedSlots: {},
     usedSlots: {},
     manualBonusSlots: {},
+    customSpellcasting: {
+      enabled: false,
+      ability: 'charisma',
+      mode: 'prepared',
+      maxSpellLevel: 0,
+      dailySlots: {},
+      useAbilityBonusSlots: false,
+    },
+    customSpellLevels: {},
     domainNames: [],
     specializationSchool: '',
     oppositionSchools: [],
@@ -101,6 +133,22 @@ export function getCastingMode(className: string): CastingMode | null {
 
 export function getCastingAbility(className: string): AbilityKey | null {
   return getClassProgression(className)?.ability ?? null;
+}
+
+export function isSpellcastingEntry(classEntry: CharacterClassEntry): boolean {
+  return Boolean(getClassProgression(classEntry.name) || classEntry.customSpellcasting.enabled);
+}
+
+export function getCastingModeForEntry(classEntry: CharacterClassEntry): CastingMode | null {
+  return getClassProgression(classEntry.name)?.mode ??
+    (classEntry.customSpellcasting.enabled ? classEntry.customSpellcasting.mode : null);
+}
+
+export function getCastingAbilityForEntry(
+  classEntry: CharacterClassEntry,
+): CharacterAbilityKey | null {
+  return getClassProgression(classEntry.name)?.ability ??
+    (classEntry.customSpellcasting.enabled ? classEntry.customSpellcasting.ability : null);
 }
 
 export function getAbilityModifier(score: number): number {
@@ -147,9 +195,28 @@ export function getSpellLevelForClass(spell: Spell, className: string): number |
   return listedForClass ? spell.level : null;
 }
 
+export function getSpellLevelForEntry(
+  classEntry: CharacterClassEntry,
+  spell: Spell,
+): number | null {
+  const classLevel = getSpellLevelForClass(spell, classEntry.name);
+  if (classLevel !== null) return classLevel;
+  if (!classEntry.customSpellcasting.enabled) return null;
+  const customLevel = classEntry.customSpellLevels[getSpellIdentifier(spell)];
+  return Number.isInteger(customLevel) && customLevel >= 0 && customLevel <= 9
+    ? customLevel
+    : null;
+}
+
 export function getClassSpellLevels(classEntry: CharacterClassEntry): number[] {
   const progression = getClassProgression(classEntry.name);
-  if (!progression || classEntry.level < 1 || classEntry.level > 20) return [];
+  if (!progression) {
+    if (!classEntry.customSpellcasting.enabled) return [];
+    const maxSpellLevel = classEntry.customSpellcasting.maxSpellLevel;
+    if (!Number.isInteger(maxSpellLevel) || maxSpellLevel < 0 || maxSpellLevel > 9) return [];
+    return Array.from({ length: maxSpellLevel + 1 }, (_, spellLevel) => spellLevel);
+  }
+  if (classEntry.level < 1 || classEntry.level > 20) return [];
   const row = progression.slotRows[classEntry.level - 1] ?? [];
   return row.flatMap((slots, spellLevel) => (slots === null || slots === undefined ? [] : [spellLevel]));
 }
@@ -159,10 +226,20 @@ export function getDailySpellSlots(
   abilities: AbilityScores,
 ): DailySpellSlot[] {
   const progression = getClassProgression(classEntry.name);
-  if (!progression || classEntry.level < 1 || classEntry.level > 20) return [];
+  const custom = !progression && classEntry.customSpellcasting.enabled
+    ? classEntry.customSpellcasting
+    : null;
+  if (!progression && !custom) return [];
+  if (progression && (classEntry.level < 1 || classEntry.level > 20)) return [];
 
-  const row = progression.slotRows[classEntry.level - 1] ?? [];
-  const abilityScore = abilities[progression.ability];
+  const row = progression
+    ? progression.slotRows[classEntry.level - 1] ?? []
+    : Array.from(
+        { length: custom!.maxSpellLevel + 1 },
+        (_, spellLevel) => Math.max(0, Math.floor(Number(custom!.dailySlots[String(spellLevel)] ?? 0))),
+      );
+  const ability = progression?.ability ?? custom!.ability;
+  const abilityScore = abilities[ability];
   const slots: DailySpellSlot[] = [];
 
   const addSlots = (spellLevel: number, source: SlotSource, count: number) => {
@@ -181,14 +258,16 @@ export function getDailySpellSlots(
     if (baseCount === null || baseCount === undefined) return;
 
     addSlots(spellLevel, 'classe', baseCount);
-    addSlots(
-      spellLevel,
-      'caratteristica',
-      getBonusSpellSlots(abilityScore, spellLevel),
-    );
+    if (!custom || custom.useAbilityBonusSlots) {
+      addSlots(
+        spellLevel,
+        'caratteristica',
+        getBonusSpellSlots(abilityScore, spellLevel),
+      );
+    }
 
     if (
-      progression.extraSlotRule === 'cleric-domain' &&
+      progression?.extraSlotRule === 'cleric-domain' &&
       spellLevel > 0 &&
       classEntry.domainNames.filter(Boolean).length === 2
     ) {
@@ -196,7 +275,7 @@ export function getDailySpellSlots(
     }
 
     if (
-      progression.extraSlotRule === 'wizard-specialist' &&
+      progression?.extraSlotRule === 'wizard-specialist' &&
       spellLevel > 0 &&
       classEntry.specializationSchool &&
       classEntry.oppositionSchools.filter(Boolean).length ===
@@ -223,7 +302,11 @@ export function getSpellLevelSummaries(
   abilities: AbilityScores,
 ): SpellLevelSummary[] {
   const progression = getClassProgression(classEntry.name);
-  const row = progression?.slotRows[classEntry.level - 1] ?? [];
+  const row = progression
+    ? progression.slotRows[classEntry.level - 1] ?? []
+    : classEntry.customSpellcasting.enabled
+      ? Array.from({ length: classEntry.customSpellcasting.maxSpellLevel + 1 }, () => 0)
+      : [];
   const levels = row.flatMap((count, spellLevel) =>
     count === null || count === undefined ? [] : [spellLevel],
   );
@@ -249,9 +332,9 @@ export function canPrepareSpellInSlot(
   slot: DailySpellSlot,
   spell: Spell,
 ): boolean {
-  if (getCastingMode(classEntry.name) !== 'prepared' || !slot.canCast) return false;
+  if (getCastingModeForEntry(classEntry) !== 'prepared' || !slot.canCast) return false;
 
-  const ability = getCastingAbility(classEntry.name);
+  const ability = getCastingAbilityForEntry(classEntry);
   if (ability === null) return false;
 
   if (slot.source === 'dominio') {
@@ -270,9 +353,15 @@ export function canPrepareSpellInSlot(
     return true;
   }
 
-  const spellLevel = getSpellLevelForClass(spell, classEntry.name);
+  const spellLevel = getSpellLevelForEntry(classEntry, spell);
   if (spellLevel === null || spellLevel > slot.spellLevel) return false;
   if (abilities[ability] < 10 + spellLevel) return false;
+  if (
+    (classEntry.name === 'Mago' || (!getClassProgression(classEntry.name) && classEntry.customSpellcasting.enabled)) &&
+    !classEntry.knownSpellIds.includes(getSpellIdentifier(spell))
+  ) {
+    return false;
+  }
 
   const normalizedSchool = normalizeClassName(schoolBase(spell.school));
   if (classEntry.name === 'Mago' && classEntry.specializationSchool) {
@@ -306,9 +395,9 @@ export function canCastKnownSpell(
   abilities: AbilityScores,
   spell: Spell,
 ): boolean {
-  if (getCastingMode(classEntry.name) !== 'spontaneous') return false;
-  const spellLevel = getSpellLevelForClass(spell, classEntry.name);
-  const ability = getCastingAbility(classEntry.name);
+  if (getCastingModeForEntry(classEntry) !== 'spontaneous') return false;
+  const spellLevel = getSpellLevelForEntry(classEntry, spell);
+  const ability = getCastingAbilityForEntry(classEntry);
   if (spellLevel === null || ability === null) return false;
   if (!classEntry.knownSpellIds.includes(getSpellIdentifier(spell))) return false;
   if (abilities[ability] < 10 + spellLevel) return false;
@@ -389,10 +478,10 @@ export function addKnownSpell(
   spell: Spell,
 ): CharacterSheet {
   const entry = character.classes.find((item) => item.id === classId);
-  if (!entry || !getCastingMode(entry.name)) {
+  if (!entry || !getCastingModeForEntry(entry)) {
     throw new Error('La classe selezionata non ha un repertorio di incantesimi.');
   }
-  const spellLevel = getSpellLevelForClass(spell, entry.name);
+  const spellLevel = getSpellLevelForEntry(entry, spell);
   const domainSpellLevel = entry.name === 'Chierico'
     ? spell.classLevels.find((classLevel) =>
         entry.domainNames.filter(Boolean).includes(classLevel.className),
@@ -498,7 +587,7 @@ export function recordSpontaneousCast(
   if (!entry || !slot || !slot.canCast || !canCastKnownSpell(entry, character.abilities, spell)) {
     throw new Error('Incantesimo o slot non disponibile.');
   }
-  if (slot.spellLevel !== getSpellLevelForClass(spell, entry.name)) {
+  if (slot.spellLevel !== getSpellLevelForEntry(entry, spell)) {
     throw new Error('Per questo incantesimo serve uno slot del suo livello.');
   }
   if (entry.usedSlots[slotId]) throw new Error('Questo slot è già stato usato.');
@@ -553,64 +642,220 @@ export function setManualBonusSlots(
   };
 }
 
+export function setAbilityScore(
+  character: CharacterSheet,
+  ability: CharacterAbilityKey,
+  score: number,
+): CharacterSheet {
+  if (!Number.isInteger(score) || score < 1 || score > 40) {
+    throw new Error('Il punteggio deve essere un numero intero tra 1 e 40.');
+  }
+  return {
+    ...character,
+    abilities: { ...character.abilities, [ability]: score },
+  };
+}
+
+export function setCustomSpellcasting(
+  character: CharacterSheet,
+  classId: string,
+  changes: Partial<CharacterClassEntry['customSpellcasting']>,
+): CharacterSheet {
+  return {
+    ...character,
+    classes: character.classes.map((entry) => {
+      if (entry.id !== classId) return entry;
+      const next = { ...entry.customSpellcasting, ...changes };
+      if (
+        !Number.isInteger(next.maxSpellLevel) ||
+        next.maxSpellLevel < 0 ||
+        next.maxSpellLevel > 9
+      ) {
+        throw new Error('Il livello massimo degli incantesimi deve essere tra 0 e 9.');
+      }
+      return { ...entry, customSpellcasting: next };
+    }),
+  };
+}
+
+export function setCustomDailySlots(
+  character: CharacterSheet,
+  classId: string,
+  spellLevel: number,
+  count: number,
+): CharacterSheet {
+  if (!Number.isInteger(count) || count < 0 || count > 99) {
+    throw new Error('Il numero di slot deve essere un intero tra 0 e 99.');
+  }
+  return {
+    ...character,
+    classes: character.classes.map((entry) => {
+      if (entry.id !== classId) return entry;
+      if (
+        !entry.customSpellcasting.enabled ||
+        !Number.isInteger(spellLevel) ||
+        spellLevel < 0 ||
+        spellLevel > entry.customSpellcasting.maxSpellLevel
+      ) {
+        throw new Error('Il livello di slot non è configurato per questa classe.');
+      }
+      const dailySlots = { ...entry.customSpellcasting.dailySlots };
+      if (count === 0) delete dailySlots[String(spellLevel)];
+      else dailySlots[String(spellLevel)] = count;
+      return {
+        ...entry,
+        customSpellcasting: { ...entry.customSpellcasting, dailySlots },
+      };
+    }),
+  };
+}
+
+export function setCustomSpellLevel(
+  character: CharacterSheet,
+  classId: string,
+  spellId: string,
+  spellLevel: number,
+): CharacterSheet {
+  if (!Number.isInteger(spellLevel) || spellLevel < 0 || spellLevel > 9) {
+    throw new Error('Il livello dell’incantesimo deve essere tra 0 e 9.');
+  }
+  return {
+    ...character,
+    classes: character.classes.map((entry) => {
+      if (entry.id !== classId) return entry;
+      if (!entry.customSpellcasting.enabled) {
+        throw new Error('Attiva la magia personalizzata per assegnare un livello manuale.');
+      }
+      return {
+        ...entry,
+        customSpellLevels: { ...entry.customSpellLevels, [spellId]: spellLevel },
+      };
+    }),
+  };
+}
+
 export function parseCharacterSheet(value: unknown): CharacterSheet {
   if (!value || typeof value !== 'object') {
     throw new Error('La scheda salvata non è valida e non è stata sovrascritta.');
   }
-  const candidate = value as Partial<CharacterSheet>;
+  const isRecord = (input: unknown): input is Record<string, unknown> =>
+    Boolean(input) && typeof input === 'object' && !Array.isArray(input);
+  const candidate = value as Record<string, unknown>;
   if (
-    candidate.version !== 1 ||
+    (candidate.version !== 1 && candidate.version !== 2) ||
     typeof candidate.name !== 'string' ||
-    !candidate.abilities ||
+    !isRecord(candidate.abilities) ||
     !Array.isArray(candidate.classes)
   ) {
     throw new Error('La versione della scheda salvata non è supportata.');
   }
-
-  const abilities = candidate.abilities as AbilityScores;
-  if (
-    !['intelligence', 'wisdom', 'charisma'].every(
-      (key) =>
-        Number.isInteger(abilities[key as AbilityKey]) &&
-        abilities[key as AbilityKey] >= 1 &&
-        abilities[key as AbilityKey] <= 40,
-    )
-  ) {
-    throw new Error('I punteggi di caratteristica salvati non sono validi.');
+  if (candidate.version === 2 && typeof candidate.race !== 'string') {
+    throw new Error('La razza della scheda salvata non è valida.');
   }
 
-  const classes = candidate.classes.map((entry) => {
+  const rawAbilities = candidate.abilities;
+  const abilities: AbilityScores = { ...DEFAULT_ABILITIES };
+  for (const key of CHARACTER_ABILITY_KEYS) {
+    const score = rawAbilities[key];
+    const isNewAbility = key === 'strength' || key === 'dexterity' || key === 'constitution';
+    if (score === undefined && !(candidate.version === 1 && isNewAbility)) {
+      throw new Error('La scheda salvata non contiene tutte le caratteristiche magiche.');
+    }
+    if (score !== undefined) {
+      if (!Number.isInteger(score) || Number(score) < 1 || Number(score) > 40) {
+        throw new Error('I punteggi di caratteristica salvati non sono validi.');
+      }
+      abilities[key] = Number(score);
+    }
+  }
+
+  const stringArray = (input: unknown): string[] =>
+    Array.isArray(input) ? input.filter((item): item is string => typeof item === 'string') : [];
+  const stringRecord = (input: unknown): Record<string, string> => {
+    if (!isRecord(input)) return {};
+    return Object.fromEntries(
+      Object.entries(input).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+    );
+  };
+  const numberRecord = (input: unknown): Record<string, number> => {
+    if (!isRecord(input)) return {};
+    return Object.fromEntries(
+      Object.entries(input).filter(
+        (entry): entry is [string, number] =>
+          Number.isInteger(entry[1]) && Number(entry[1]) >= 0 && Number(entry[1]) <= 99,
+      ),
+    );
+  };
+  const classes = candidate.classes.map((rawEntry) => {
+    if (!isRecord(rawEntry)) {
+      throw new Error('Una classe della scheda salvata non è valida.');
+    }
+    const entry = rawEntry;
     if (
-      !entry ||
       typeof entry.id !== 'string' ||
       !CORE_CHARACTER_CLASSES.includes(entry.name as (typeof CORE_CHARACTER_CLASSES)[number]) ||
       !Number.isInteger(entry.level) ||
-      entry.level < 1 ||
-      entry.level > 20
+      Number(entry.level) < 1 ||
+      Number(entry.level) > 20
     ) {
       throw new Error('Una classe della scheda salvata non è valida.');
     }
+    if (
+      candidate.version === 2 &&
+      (!isRecord(entry.customSpellcasting) || !isRecord(entry.customSpellLevels))
+    ) {
+      throw new Error('La configurazione magica personalizzata della scheda non è valida.');
+    }
+    const rawCustom = isRecord(entry.customSpellcasting) ? entry.customSpellcasting : {};
+    if (
+      candidate.version === 2 &&
+      (
+        typeof rawCustom.enabled !== 'boolean' ||
+        !CHARACTER_ABILITY_KEYS.includes(rawCustom.ability as CharacterAbilityKey) ||
+        (rawCustom.mode !== 'prepared' && rawCustom.mode !== 'spontaneous') ||
+        !Number.isInteger(rawCustom.maxSpellLevel) ||
+        Number(rawCustom.maxSpellLevel) < 0 ||
+        Number(rawCustom.maxSpellLevel) > 9 ||
+        typeof rawCustom.useAbilityBonusSlots !== 'boolean' ||
+        !isRecord(rawCustom.dailySlots)
+      )
+    ) {
+      throw new Error('La configurazione magica personalizzata della scheda non è valida.');
+    }
+    const customAbility = CHARACTER_ABILITY_KEYS.includes(rawCustom.ability as CharacterAbilityKey)
+      ? rawCustom.ability as CharacterAbilityKey
+      : 'charisma';
+    const customMode: CastingMode = rawCustom.mode === 'spontaneous' ? 'spontaneous' : 'prepared';
+    const maxSpellLevel = Number.isInteger(rawCustom.maxSpellLevel) &&
+      Number(rawCustom.maxSpellLevel) >= 0 &&
+      Number(rawCustom.maxSpellLevel) <= 9
+      ? Number(rawCustom.maxSpellLevel)
+      : 0;
+
     return {
       id: entry.id,
-      name: entry.name,
-      level: entry.level,
-      knownSpellIds: Array.isArray(entry.knownSpellIds) ? entry.knownSpellIds : [],
-      preparedSlots: entry.preparedSlots && typeof entry.preparedSlots === 'object'
-        ? entry.preparedSlots
-        : {},
-      usedSlots: entry.usedSlots && typeof entry.usedSlots === 'object'
-        ? entry.usedSlots
-        : {},
-      manualBonusSlots: entry.manualBonusSlots && typeof entry.manualBonusSlots === 'object'
-        ? entry.manualBonusSlots
-        : {},
-      domainNames: Array.isArray(entry.domainNames) ? entry.domainNames : [],
+      name: entry.name as string,
+      level: Number(entry.level),
+      knownSpellIds: stringArray(entry.knownSpellIds),
+      preparedSlots: stringRecord(entry.preparedSlots),
+      usedSlots: stringRecord(entry.usedSlots),
+      manualBonusSlots: numberRecord(entry.manualBonusSlots),
+      customSpellcasting: {
+        enabled: rawCustom.enabled === true,
+        ability: customAbility,
+        mode: customMode,
+        maxSpellLevel,
+        dailySlots: numberRecord(rawCustom.dailySlots),
+        useAbilityBonusSlots: rawCustom.useAbilityBonusSlots === true,
+      },
+      customSpellLevels: Object.fromEntries(
+        Object.entries(numberRecord(entry.customSpellLevels)).filter(([, spellLevel]) => spellLevel <= 9),
+      ),
+      domainNames: stringArray(entry.domainNames),
       specializationSchool: typeof entry.specializationSchool === 'string'
         ? entry.specializationSchool
         : '',
-      oppositionSchools: Array.isArray(entry.oppositionSchools)
-        ? entry.oppositionSchools
-        : [],
+      oppositionSchools: stringArray(entry.oppositionSchools),
     } satisfies CharacterClassEntry;
   });
 
@@ -619,9 +864,10 @@ export function parseCharacterSheet(value: unknown): CharacterSheet {
   }
 
   return {
-    version: 1,
+    version: 2,
     name: candidate.name,
-    abilities: { ...abilities },
+    race: typeof candidate.race === 'string' ? candidate.race : '',
+    abilities,
     classes,
   };
 }
